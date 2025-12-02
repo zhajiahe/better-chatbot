@@ -286,6 +286,26 @@ function findModel(model: ChatModel): LanguageModel | undefined {
  * Model provider with sync and async model retrieval
  */
 export const customModelProvider = {
+  /** Cached models info (sync, uses static models only) */
+  get modelsInfo() {
+    return Object.entries(cachedAllModels)
+      .filter(
+        ([provider]) =>
+          provider !== "openRouter" ||
+          Object.keys(cachedAllModels.openRouter || {}).length > 0,
+      )
+      .map(([provider, models]) => ({
+        provider,
+        models: Object.entries(models).map(([name, model]) => ({
+          name,
+          isToolCallUnsupported: isToolCallUnsupportedModel(model),
+          isImageInputUnsupported: isImageInputUnsupportedModel(model),
+          supportedFileMimeTypes: [...getFilePartSupportedMimeTypes(model)],
+        })),
+        hasAPIKey: checkProviderAPIKey(provider as keyof typeof staticModels),
+      }));
+  },
+
   getModel(model?: ChatModel): LanguageModel {
     if (!model) return getFallbackModel();
     const found = findModel(model);
