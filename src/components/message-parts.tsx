@@ -158,7 +158,7 @@ export const UserMessagePart = memo(
     useEffect(() => {
       if (status === "submitted" && isLast && !scrolledRef.current) {
         scrolledRef.current = true;
-        ref.current?.scrollIntoView({ behavior: "smooth" });
+        ref.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       }
     }, [status]);
 
@@ -176,7 +176,7 @@ export const UserMessagePart = memo(
     }
 
     return (
-      <div className="flex flex-col gap-2 items-end my-2">
+      <div ref={ref} className="flex flex-col gap-2 items-end my-2">
         <div
           data-testid="message-content"
           className={cn(
