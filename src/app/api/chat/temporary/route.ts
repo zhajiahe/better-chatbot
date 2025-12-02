@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       instructions?: string;
     };
     logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);
-    const model = customModelProvider.getModel(chatModel);
+    const model = await customModelProvider.getModelAsync(chatModel);
     const userPreferences =
       (await getUserPreferences(session.user.id)) || undefined;
 

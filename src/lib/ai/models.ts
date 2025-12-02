@@ -323,6 +323,33 @@ export const customModelProvider = {
       // This helps users understand that their model selection is invalid
       throw new Error(
         `Model "${model.model}" from provider "${model.provider}" not found. ` +
+          `This may be because the model cache hasn't been initialized yet. ` +
+          `Please refresh the page or ensure the API key is configured.`,
+      );
+    }
+    return foundModel;
+  },
+  /**
+   * Async version of getModel that ensures OpenRouter models are loaded first
+   */
+  async getModelAsync(model?: ChatModel): Promise<LanguageModel> {
+    if (!model) return getFallbackModel();
+
+    // If requesting OpenRouter model and cache is empty, fetch models first
+    if (
+      model.provider === "openRouter" &&
+      Object.keys(cachedAllModels.openRouter || {}).length === 0
+    ) {
+      const hasKey = checkProviderAPIKey("openRouter");
+      if (hasKey) {
+        await getModelsInfo(); // This will populate the cache
+      }
+    }
+
+    const foundModel = cachedAllModels[model.provider]?.[model.model];
+    if (!foundModel) {
+      throw new Error(
+        `Model "${model.model}" from provider "${model.provider}" not found. ` +
           `Please select a valid model or configure the appropriate API key.`,
       );
     }

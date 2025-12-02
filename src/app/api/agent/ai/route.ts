@@ -81,8 +81,9 @@ export async function POST(request: Request) {
 
     const system = buildAgentGenerationPrompt(Array.from(toolNames));
 
+    const model = await customModelProvider.getModelAsync(chatModel);
     const result = streamObject({
-      model: customModelProvider.getModel(chatModel),
+      model,
       system,
       prompt: message,
       schema: dynamicAgentTable,
