@@ -177,7 +177,34 @@ export const getFilePartSupportedMimeTypes = (model: LanguageModel) => {
   return staticFilePartSupportByModel.get(model) ?? [];
 };
 
-const fallbackModel = staticModels.openai["gpt-4.1"];
+// Dynamic fallback model - will be set based on available API keys
+function getFallbackModel(): LanguageModel {
+  // Check which API keys are configured and return appropriate fallback
+  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== "****") {
+    return staticModels.openai["gpt-4.1"];
+  }
+  if (
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY &&
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY !== "****"
+  ) {
+    return staticModels.google["gemini-2.5-flash"];
+  }
+  if (
+    process.env.ANTHROPIC_API_KEY &&
+    process.env.ANTHROPIC_API_KEY !== "****"
+  ) {
+    return staticModels.anthropic["sonnet-4.5"];
+  }
+  if (process.env.XAI_API_KEY && process.env.XAI_API_KEY !== "****") {
+    return staticModels.xai["grok-3-mini"];
+  }
+  if (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY !== "****") {
+    return staticModels.groq["qwen3-32b"];
+  }
+  // OpenRouter fallback - will be set dynamically after models are loaded
+  // For now, return a placeholder that will be updated
+  return staticModels.openai["gpt-4.1"]; // This should be overridden
+}
 
 // Cache for dynamic models
 let cachedAllModels: Record<
@@ -289,8 +316,17 @@ export const customModelProvider = {
       }));
   },
   getModel: (model?: ChatModel): LanguageModel => {
-    if (!model) return fallbackModel;
-    return cachedAllModels[model.provider]?.[model.model] || fallbackModel;
+    if (!model) return getFallbackModel();
+    const foundModel = cachedAllModels[model.provider]?.[model.model];
+    if (!foundModel) {
+      // If the requested model is not found, throw an error instead of silently falling back
+      // This helps users understand that their model selection is invalid
+      throw new Error(
+        `Model "${model.model}" from provider "${model.provider}" not found. ` +
+          `Please select a valid model or configure the appropriate API key.`,
+      );
+    }
+    return foundModel;
   },
 };
 
