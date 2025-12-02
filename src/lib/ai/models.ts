@@ -177,33 +177,20 @@ export const getFilePartSupportedMimeTypes = (model: LanguageModel) => {
   return staticFilePartSupportByModel.get(model) ?? [];
 };
 
-// Dynamic fallback model - will be set based on available API keys
+// Fallback models by provider priority
+const fallbackByProvider: [keyof typeof staticModels, LanguageModel][] = [
+  ["openai", staticModels.openai["gpt-4.1"]],
+  ["google", staticModels.google["gemini-2.5-flash"]],
+  ["anthropic", staticModels.anthropic["sonnet-4.5"]],
+  ["xai", staticModels.xai["grok-3-mini"]],
+  ["groq", staticModels.groq["qwen3-32b"]],
+];
+
 function getFallbackModel(): LanguageModel {
-  // Check which API keys are configured and return appropriate fallback
-  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== "****") {
-    return staticModels.openai["gpt-4.1"];
+  for (const [provider, model] of fallbackByProvider) {
+    if (checkProviderAPIKey(provider)) return model;
   }
-  if (
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY &&
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY !== "****"
-  ) {
-    return staticModels.google["gemini-2.5-flash"];
-  }
-  if (
-    process.env.ANTHROPIC_API_KEY &&
-    process.env.ANTHROPIC_API_KEY !== "****"
-  ) {
-    return staticModels.anthropic["sonnet-4.5"];
-  }
-  if (process.env.XAI_API_KEY && process.env.XAI_API_KEY !== "****") {
-    return staticModels.xai["grok-3-mini"];
-  }
-  if (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY !== "****") {
-    return staticModels.groq["qwen3-32b"];
-  }
-  // OpenRouter fallback - will be set dynamically after models are loaded
-  // For now, return a placeholder that will be updated
-  return staticModels.openai["gpt-4.1"]; // This should be overridden
+  return staticModels.openai["gpt-4.1"]; // Last resort
 }
 
 // Cache for dynamic models
@@ -290,70 +277,46 @@ export async function getModelsInfo() {
   ];
 }
 
+// Helper to find model in cache
+function findModel(model: ChatModel): LanguageModel | undefined {
+  return cachedAllModels[model.provider]?.[model.model];
+}
+
 /**
- * Synchronous model provider for use in chat routes
- * Uses cached models from last getModelsInfo() call
+ * Model provider with sync and async model retrieval
  */
 export const customModelProvider = {
-  // This is now a getter that returns cached info for backwards compatibility
-  // For fresh data, use getModelsInfo() async function
-  get modelsInfo() {
-    return Object.entries(cachedAllModels)
-      .filter(
-        ([provider]) =>
-          provider !== "openRouter" ||
-          Object.keys(cachedAllModels.openRouter || {}).length > 0,
-      )
-      .map(([provider, models]) => ({
-        provider,
-        models: Object.entries(models).map(([name, model]) => ({
-          name,
-          isToolCallUnsupported: isToolCallUnsupportedModel(model),
-          isImageInputUnsupported: isImageInputUnsupportedModel(model),
-          supportedFileMimeTypes: [...getFilePartSupportedMimeTypes(model)],
-        })),
-        hasAPIKey: checkProviderAPIKey(provider as keyof typeof staticModels),
-      }));
-  },
-  getModel: (model?: ChatModel): LanguageModel => {
+  getModel(model?: ChatModel): LanguageModel {
     if (!model) return getFallbackModel();
-    const foundModel = cachedAllModels[model.provider]?.[model.model];
-    if (!foundModel) {
-      // If the requested model is not found, throw an error instead of silently falling back
-      // This helps users understand that their model selection is invalid
+    const found = findModel(model);
+    if (!found) {
       throw new Error(
-        `Model "${model.model}" from provider "${model.provider}" not found. ` +
-          `This may be because the model cache hasn't been initialized yet. ` +
-          `Please refresh the page or ensure the API key is configured.`,
+        `Model "${model.model}" from "${model.provider}" not found. Refresh the page or check API key.`,
       );
     }
-    return foundModel;
+    return found;
   },
-  /**
-   * Async version of getModel that ensures OpenRouter models are loaded first
-   */
+
+  /** Async version that initializes OpenRouter cache on demand */
   async getModelAsync(model?: ChatModel): Promise<LanguageModel> {
     if (!model) return getFallbackModel();
 
-    // If requesting OpenRouter model and cache is empty, fetch models first
+    // Initialize OpenRouter cache if needed
     if (
       model.provider === "openRouter" &&
-      Object.keys(cachedAllModels.openRouter || {}).length === 0
+      !Object.keys(cachedAllModels.openRouter || {}).length &&
+      checkProviderAPIKey("openRouter")
     ) {
-      const hasKey = checkProviderAPIKey("openRouter");
-      if (hasKey) {
-        await getModelsInfo(); // This will populate the cache
-      }
+      await getModelsInfo();
     }
 
-    const foundModel = cachedAllModels[model.provider]?.[model.model];
-    if (!foundModel) {
+    const found = findModel(model);
+    if (!found) {
       throw new Error(
-        `Model "${model.model}" from provider "${model.provider}" not found. ` +
-          `Please select a valid model or configure the appropriate API key.`,
+        `Model "${model.model}" from "${model.provider}" not found. Check API key configuration.`,
       );
     }
-    return foundModel;
+    return found;
   },
 };
 
