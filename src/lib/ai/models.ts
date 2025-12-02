@@ -5,7 +5,7 @@ import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import { anthropic } from "@ai-sdk/anthropic";
 import { xai } from "@ai-sdk/xai";
-import { LanguageModelV2, openrouter } from "@openrouter/ai-sdk-provider";
+import { LanguageModelV2 } from "@openrouter/ai-sdk-provider";
 import { createGroq } from "@ai-sdk/groq";
 import { LanguageModel } from "ai";
 import {
@@ -20,6 +20,10 @@ import {
   ANTHROPIC_FILE_MIME_TYPES,
   XAI_FILE_MIME_TYPES,
 } from "./file-support";
+import {
+  createOpenRouterModels,
+  OpenRouterModelsOptions,
+} from "./openrouter-models";
 
 const ollama = createOllama({
   baseURL: process.env.OLLAMA_BASE_URL || "http://localhost:11434/api",
@@ -68,15 +72,9 @@ const staticModels = {
     "gpt-oss-120b": groq("openai/gpt-oss-120b"),
     "qwen3-32b": groq("qwen/qwen3-32b"),
   },
-  openRouter: {
-    "gpt-oss-20b:free": openrouter("openai/gpt-oss-20b:free"),
-    "qwen3-8b:free": openrouter("qwen/qwen3-8b:free"),
-    "qwen3-14b:free": openrouter("qwen/qwen3-14b:free"),
-    "qwen3-coder:free": openrouter("qwen/qwen3-coder:free"),
-    "deepseek-r1:free": openrouter("deepseek/deepseek-r1-0528:free"),
-    "deepseek-v3:free": openrouter("deepseek/deepseek-chat-v3-0324:free"),
-    "gemini-2.0-flash-exp:free": openrouter("google/gemini-2.0-flash-exp:free"),
-  },
+  // OpenRouter models are loaded dynamically via createOpenRouterModels()
+  // Keep minimal static models as fallback
+  openRouter: {} as Record<string, LanguageModel>,
 };
 
 const staticUnsupportedModels = new Set([
@@ -84,11 +82,6 @@ const staticUnsupportedModels = new Set([
   staticModels.ollama["gemma3:1b"],
   staticModels.ollama["gemma3:4b"],
   staticModels.ollama["gemma3:12b"],
-  staticModels.openRouter["gpt-oss-20b:free"],
-  staticModels.openRouter["qwen3-8b:free"],
-  staticModels.openRouter["qwen3-14b:free"],
-  staticModels.openRouter["deepseek-r1:free"],
-  staticModels.openRouter["gemini-2.0-flash-exp:free"],
 ]);
 
 const staticSupportImageInputModels = {
@@ -146,10 +139,7 @@ registerFileSupport(staticModels.xai["grok-4-fast"], XAI_FILE_MIME_TYPES);
 registerFileSupport(staticModels.xai["grok-4"], XAI_FILE_MIME_TYPES);
 registerFileSupport(staticModels.xai["grok-3"], XAI_FILE_MIME_TYPES);
 registerFileSupport(staticModels.xai["grok-3-mini"], XAI_FILE_MIME_TYPES);
-registerFileSupport(
-  staticModels.openRouter["gemini-2.0-flash-exp:free"],
-  GEMINI_FILE_MIME_TYPES,
-);
+// OpenRouter file support is determined dynamically based on model capabilities
 
 const openaiCompatibleProviders = openaiCompatibleModelsSafeParse(
   process.env.OPENAI_COMPATIBLE_DATA,
@@ -160,19 +150,27 @@ const {
   unsupportedModels: openaiCompatibleUnsupportedModels,
 } = createOpenAICompatibleModels(openaiCompatibleProviders);
 
-const allModels = { ...openaiCompatibleModels, ...staticModels };
+// Base static models (excluding dynamic openRouter)
+const baseStaticModels = { ...openaiCompatibleModels, ...staticModels };
 
-const allUnsupportedModels = new Set([
+const baseUnsupportedModels = new Set([
   ...openaiCompatibleUnsupportedModels,
   ...staticUnsupportedModels,
 ]);
 
+// Dynamic unsupported models cache (for OpenRouter)
+let dynamicUnsupportedModels = new Set<LanguageModel>();
+
 export const isToolCallUnsupportedModel = (model: LanguageModel) => {
-  return allUnsupportedModels.has(model);
+  return (
+    baseUnsupportedModels.has(model) || dynamicUnsupportedModels.has(model)
+  );
 };
 
-const isImageInputUnsupportedModel = (model: LanguageModelV2) => {
-  return !Object.values(staticSupportImageInputModels).includes(model);
+const isImageInputUnsupportedModel = (model: LanguageModel) => {
+  return !Object.values(staticSupportImageInputModels).includes(
+    model as LanguageModelV2,
+  );
 };
 
 export const getFilePartSupportedMimeTypes = (model: LanguageModel) => {
@@ -181,20 +179,118 @@ export const getFilePartSupportedMimeTypes = (model: LanguageModel) => {
 
 const fallbackModel = staticModels.openai["gpt-4.1"];
 
+// Cache for dynamic models
+let cachedAllModels: Record<
+  string,
+  Record<string, LanguageModel>
+> = baseStaticModels;
+
+/**
+ * OpenRouter model loading options
+ */
+export const openRouterOptions: OpenRouterModelsOptions = {
+  // Default: load all text models (can be customized via env)
+  textOnly: process.env.OPENROUTER_TEXT_ONLY !== "false",
+  freeOnly: process.env.OPENROUTER_FREE_ONLY === "true",
+  maxModels: process.env.OPENROUTER_MAX_MODELS
+    ? parseInt(process.env.OPENROUTER_MAX_MODELS, 10)
+    : undefined,
+};
+
+/**
+ * Get models info with dynamic OpenRouter models
+ * This is async and should be called from API routes
+ */
+export async function getModelsInfo() {
+  const hasOpenRouterKey = checkProviderAPIKey("openRouter");
+
+  // Start with static models info
+  const staticModelsInfo = Object.entries(baseStaticModels)
+    .filter(([provider]) => provider !== "openRouter") // Exclude static openRouter placeholder
+    .map(([provider, models]) => ({
+      provider,
+      models: Object.entries(models).map(([name, model]) => ({
+        name,
+        isToolCallUnsupported: isToolCallUnsupportedModel(model),
+        isImageInputUnsupported: isImageInputUnsupportedModel(model),
+        supportedFileMimeTypes: [...getFilePartSupportedMimeTypes(model)],
+      })),
+      hasAPIKey: checkProviderAPIKey(provider as keyof typeof staticModels),
+    }));
+
+  // If OpenRouter API key is configured, fetch dynamic models
+  if (hasOpenRouterKey) {
+    try {
+      const { models, unsupportedModels } =
+        await createOpenRouterModels(openRouterOptions);
+
+      // Update dynamic unsupported models cache
+      dynamicUnsupportedModels = unsupportedModels;
+
+      // Update cached models for getModel()
+      cachedAllModels = {
+        ...baseStaticModels,
+        openRouter: models,
+      };
+
+      // Add OpenRouter models info
+      const openRouterModelsInfo = {
+        provider: "openRouter",
+        models: Object.entries(models).map(([name, model]) => ({
+          name,
+          isToolCallUnsupported: unsupportedModels.has(model),
+          isImageInputUnsupported: true, // Most OpenRouter models don't support image input
+          supportedFileMimeTypes: [] as string[],
+        })),
+        hasAPIKey: true,
+      };
+
+      return [...staticModelsInfo, openRouterModelsInfo];
+    } catch (error) {
+      console.error("Failed to load OpenRouter models:", error);
+      // Fall through to return static models only
+    }
+  }
+
+  // Return static models info (OpenRouter without models if no key)
+  return [
+    ...staticModelsInfo,
+    {
+      provider: "openRouter",
+      models: [],
+      hasAPIKey: hasOpenRouterKey,
+    },
+  ];
+}
+
+/**
+ * Synchronous model provider for use in chat routes
+ * Uses cached models from last getModelsInfo() call
+ */
 export const customModelProvider = {
-  modelsInfo: Object.entries(allModels).map(([provider, models]) => ({
-    provider,
-    models: Object.entries(models).map(([name, model]) => ({
-      name,
-      isToolCallUnsupported: isToolCallUnsupportedModel(model),
-      isImageInputUnsupported: isImageInputUnsupportedModel(model),
-      supportedFileMimeTypes: [...getFilePartSupportedMimeTypes(model)],
-    })),
-    hasAPIKey: checkProviderAPIKey(provider as keyof typeof staticModels),
-  })),
+  // This is now a getter that returns cached info for backwards compatibility
+  // For fresh data, use getModelsInfo() async function
+  get modelsInfo() {
+    return Object.entries(cachedAllModels)
+      .filter(
+        ([provider]) =>
+          provider !== "openRouter" ||
+          Object.keys(cachedAllModels.openRouter || {}).length > 0,
+      )
+      .map(([provider, models]) => ({
+        provider,
+        models: Object.entries(models).map(([name, model]) => ({
+          name,
+          isToolCallUnsupported: isToolCallUnsupportedModel(model),
+          isImageInputUnsupported: isImageInputUnsupportedModel(model),
+          supportedFileMimeTypes: [...getFilePartSupportedMimeTypes(model)],
+        })),
+        hasAPIKey: checkProviderAPIKey(provider as keyof typeof staticModels),
+      }));
+  },
   getModel: (model?: ChatModel): LanguageModel => {
     if (!model) return fallbackModel;
-    return allModels[model.provider]?.[model.model] || fallbackModel;
+    return cachedAllModels[model.provider]?.[model.model] || fallbackModel;
   },
 };
 
