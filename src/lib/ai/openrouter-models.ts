@@ -1,8 +1,13 @@
 import "server-only";
 
-import { openrouter } from "@openrouter/ai-sdk-provider";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { LanguageModel } from "ai";
 import logger from "logger";
+
+// Create OpenRouter provider with API key from environment
+const openrouter = createOpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY,
+});
 
 interface OpenRouterModelInfo {
   id: string;
